@@ -1,0 +1,13 @@
+.env
+__pycache__/
+*.pyc
+*.pyo
+backend/.venv/
+helio_data.db
+*.db
+*.bin
+node_modules/
+frontend/dist/
+.DS_Store
+*.log
+.verdent/
