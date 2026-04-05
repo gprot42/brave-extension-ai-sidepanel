@@ -1,0 +1,50 @@
+{
+  "name": "gemini-docs-sidepanel",
+  "version": "0.1.0",
+  "description": "Gemini side panel for Google Docs with full context + comments",
+  "scripts": {
+    "dev": "plasmo dev",
+    "build": "plasmo build",
+    "lint": "eslint . --ext .ts,.tsx",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "plasmo": "latest",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.280",
+    "@types/node": "^20",
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "typescript": "^5.0.0",
+    "eslint": "^8",
+    "@typescript-eslint/parser": "^7",
+    "@typescript-eslint/eslint-plugin": "^7"
+  },
+  "manifest": {
+    "permissions": [
+      "sidePanel",
+      "storage",
+      "activeTab"
+    ],
+    "host_permissions": [
+      "https://docs.google.com/*",
+      "https://drive.google.com/*"
+    ],
+    "side_panel": {
+      "default_path": "sidepanel.html"
+    },
+    "background": {
+      "service_worker": "background.ts"
+    },
+    "content_scripts": [
+      {
+        "matches": ["https://docs.google.com/document/*"],
+        "js": ["content.ts"],
+        "run_at": "document_idle"
+      }
+    ]
+  }
+}
