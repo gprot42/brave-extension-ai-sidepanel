@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1a1b26"/>
+      <stop offset="100%" stop-color="#16161e"/>
+    </linearGradient>
+    <linearGradient id="glow" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#7aa2f7"/>
+      <stop offset="100%" stop-color="#bb9af7"/>
+    </linearGradient>
+    <linearGradient id="cursor-glow" x1="0.5" y1="0" x2="0.5" y2="1">
+      <stop offset="0%" stop-color="#7aa2f7"/>
+      <stop offset="50%" stop-color="#7aa2f7"/>
+      <stop offset="100%" stop-color="#bb9af7"/>
+    </linearGradient>
+    <filter id="shadow" x="0%" y="0%" width="100%" height="100%">
+      <feDropShadow dx="0" dy="0" stdDeviation="0" flood-color="#000000" flood-opacity="0"/>
+    </filter>
+    <filter id="inner-glow">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="3" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+    <filter id="text-glow">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="6" result="blur"/>
+      <feFlood flood-color="#7aa2f7" flood-opacity="0.4" result="color"/>
+      <feComposite in="color" in2="blur" operator="in" result="glow"/>
+      <feMerge>
+        <feMergeNode in="glow"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="cursor-bloom">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="8" result="blur"/>
+      <feFlood flood-color="#7aa2f7" flood-opacity="0.6" result="color"/>
+      <feComposite in="color" in2="blur" operator="in" result="glow"/>
+      <feMerge>
+        <feMergeNode in="glow"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Clip path for macOS-style rounded icon -->
+  <clipPath id="icon-mask">
+    <rect x="0" y="0" width="1024" height="1024" rx="230" ry="230"/>
+  </clipPath>
+
+  <g clip-path="url(#icon-mask)">
+
+  <!-- Rounded background -->
+  <rect x="0" y="0" width="1024" height="1024" fill="url(#bg)"/>
+
+  <!-- Top bar accent line -->
+  <rect x="100" y="100" width="824" height="3" rx="1.5" fill="url(#glow)" opacity="0.6"/>
+
+  <!-- Code lines - representing a text editor -->
+  <!-- Line 1: keyword + function name -->
+  <rect x="200" y="240" width="90" height="22" rx="4" fill="#bb9af7" opacity="0.9"/>
+  <rect x="310" y="240" width="160" height="22" rx="4" fill="#7aa2f7" opacity="0.9"/>
+  <rect x="480" y="240" width="20" height="22" rx="4" fill="#a9b1d6" opacity="0.5"/>
+  <rect x="510" y="240" width="14" height="22" rx="4" fill="#a9b1d6" opacity="0.5"/>
+
+  <!-- Line 2: indented string -->
+  <rect x="250" y="300" width="70" height="22" rx="4" fill="#c0caf5" opacity="0.7"/>
+  <rect x="340" y="300" width="24" height="22" rx="4" fill="#89ddff" opacity="0.7"/>
+  <rect x="380" y="300" width="200" height="22" rx="4" fill="#9ece6a" opacity="0.9"/>
+
+  <!-- Line 3: variable + number -->
+  <rect x="250" y="360" width="110" height="22" rx="4" fill="#c0caf5" opacity="0.7"/>
+  <rect x="380" y="360" width="24" height="22" rx="4" fill="#89ddff" opacity="0.7"/>
+  <rect x="420" y="360" width="60" height="22" rx="4" fill="#ff9e64" opacity="0.9"/>
+
+  <!-- Line 4: comment -->
+  <rect x="250" y="420" width="320" height="22" rx="4" fill="#565f89" opacity="0.7"/>
+
+  <!-- Line 5: type + variable -->
+  <rect x="250" y="480" width="80" height="22" rx="4" fill="#2ac3de" opacity="0.9"/>
+  <rect x="350" y="480" width="130" height="22" rx="4" fill="#c0caf5" opacity="0.7"/>
+  <rect x="500" y="480" width="24" height="22" rx="4" fill="#89ddff" opacity="0.7"/>
+  <rect x="540" y="480" width="140" height="22" rx="4" fill="#9ece6a" opacity="0.9"/>
+
+  <!-- Line 6: keyword + tag (error color) -->
+  <rect x="200" y="540" width="110" height="22" rx="4" fill="#bb9af7" opacity="0.9"/>
+  <rect x="330" y="540" width="90" height="22" rx="4" fill="#f7768e" opacity="0.9"/>
+
+  <!-- Line 7: empty with cursor -->
+  <!-- Blinking cursor -->
+  <rect x="200" y="620" width="3" height="28" rx="1.5" fill="url(#cursor-glow)" filter="url(#cursor-bloom)"/>
+
+  <!-- Line numbers gutter -->
+  <text x="155" y="260" font-family="SF Mono, Menlo, monospace" font-size="20" fill="#3b4261" text-anchor="end">1</text>
+  <text x="155" y="320" font-family="SF Mono, Menlo, monospace" font-size="20" fill="#3b4261" text-anchor="end">2</text>
+  <text x="155" y="380" font-family="SF Mono, Menlo, monospace" font-size="20" fill="#3b4261" text-anchor="end">3</text>
+  <text x="155" y="440" font-family="SF Mono, Menlo, monospace" font-size="20" fill="#3b4261" text-anchor="end">4</text>
+  <text x="155" y="500" font-family="SF Mono, Menlo, monospace" font-size="20" fill="#3b4261" text-anchor="end">5</text>
+  <text x="155" y="560" font-family="SF Mono, Menlo, monospace" font-size="20" fill="#3b4261" text-anchor="end">6</text>
+  <text x="155" y="640" font-family="SF Mono, Menlo, monospace" font-size="20" fill="#737aa2" text-anchor="end">7</text>
+
+  <!-- Gutter separator -->
+  <rect x="170" y="220" width="1" height="440" fill="#292e42" opacity="0.6"/>
+
+  <!-- "N" lettermark at bottom -->
+  <text x="512" y="830" font-family="-apple-system, SF Pro Display, Helvetica Neue, sans-serif" font-size="120" font-weight="700" fill="url(#glow)" text-anchor="middle" filter="url(#text-glow)" letter-spacing="-4">N</text>
+
+  <!-- Subtle corner accent dots -->
+  <circle cx="160" cy="900" r="6" fill="#7aa2f7" opacity="0.3"/>
+  <circle cx="864" cy="900" r="6" fill="#bb9af7" opacity="0.3"/>
+
+  </g>
+</svg>
