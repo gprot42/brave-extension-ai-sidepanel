@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
+  <!-- Shield background -->
+  <path d="M24 3 L45 11 L45 27 C45 37.5 35.5 45 24 45 C12.5 45 3 37.5 3 27 L3 11 Z"
+        fill="#2563eb" />
+  <!-- Shield inner highlight -->
+  <path d="M24 7 L41 14 L41 27 C41 35 33 41.5 24 41.5 C15 41.5 7 35 7 27 L7 14 Z"
+        fill="#3b82f6" opacity="0.4" />
+  <!-- Letter P -->
+  <text x="15" y="33" font-family="Arial, sans-serif" font-size="24"
+        font-weight="bold" fill="#ffffff">P</text>
+</svg>

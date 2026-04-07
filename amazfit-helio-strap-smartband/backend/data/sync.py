@@ -9,7 +9,7 @@ import json
 import logging
 from datetime import datetime, timezone, timedelta, date
 
-from sqlalchemy import select, func, text
+from sqlalchemy import select, func, text, desc
 
 from backend.ble.connection import connection
 import backend.config as config
@@ -29,19 +29,24 @@ logger = logging.getLogger(__name__)
 hr_subscribers: list = []
 
 
+_hr_write_count = 0  # Track successful DB writes for logging
+
 async def _on_hr_reading(reading: HRReading):
-    """Called for each real-time HR reading: persist + broadcast."""
-    try:
-        async with async_session() as session:
-            session.add(models.HeartRate(timestamp=reading.timestamp, bpm=reading.bpm))
-            await session.commit()
-    except Exception as e:
-        logger.error("HR DB write error: %s", e)
+    """Called for each real-time HR reading: persist + broadcast.
+    
+    128 bpm (0x80) is a sensor calibration status, not a real reading.
+    We skip both broadcast and DB write for calibration values.
+    """
+    global _hr_write_count
+    # Skip calibration status (128 = 0x80) entirely
+    if reading.bpm == 128:
         return
 
+    # Broadcast via WebSocket
     payload = json.dumps(
         {"timestamp": reading.timestamp.isoformat(), "bpm": reading.bpm}
     )
+    ws_count = len(hr_subscribers)
     dead: list[int] = []
     for i, send_fn in enumerate(hr_subscribers):
         try:
@@ -50,6 +55,28 @@ async def _on_hr_reading(reading: HRReading):
             dead.append(i)
     for i in reversed(dead):
         hr_subscribers.pop(i)
+
+    try:
+        async with async_session() as session:
+            # Normalize timestamp to naive UTC for SQLite compatibility
+            ts_naive = reading.timestamp.replace(tzinfo=None) if reading.timestamp.tzinfo else reading.timestamp
+            # Deduplicate: skip if a reading with the same timestamp already exists
+            existing = (
+                await session.execute(
+                    select(models.HeartRate).where(
+                        models.HeartRate.timestamp == ts_naive
+                    ).limit(1)
+                )
+            ).scalar_one_or_none()
+            if existing is None:
+                session.add(models.HeartRate(timestamp=ts_naive, bpm=reading.bpm))
+                await session.commit()
+                _hr_write_count += 1
+                if _hr_write_count <= 5 or _hr_write_count % 30 == 0:
+                    logger.info("HR realtime: wrote %d bpm to DB (ws_subs=%d, total_writes=%d)",
+                                reading.bpm, ws_count, _hr_write_count)
+    except Exception as e:
+        logger.error("HR DB write error: %s", e)
 
 
 async def _on_activity_update(steps: int, calories: int):
@@ -73,42 +100,47 @@ async def _on_activity_update(steps: int, calories: int):
         await session.commit()
 
 
-_hr_callback_registered = False
+_hr_callback_proto = None  # Track which protocol object has the HR callback
 
 async def start_realtime_hr():
     """Start streaming HR from device."""
-    global _hr_callback_registered
+    global _hr_callback_proto, _hr_write_count
     proto = connection.protocol
     if proto is None:
         logger.warning("Cannot start HR stream — not connected")
         return
-    if not _hr_callback_registered:
+    if _hr_callback_proto is not proto:
+        logger.info("HR stream: registering callback on protocol %s (prev=%s)",
+                     id(proto), id(_hr_callback_proto) if _hr_callback_proto else "None")
         proto.on_hr(_on_hr_reading)
-        _hr_callback_registered = True
+        _hr_callback_proto = proto
+        _hr_write_count = 0  # Reset counter for new connection
+    else:
+        logger.info("HR stream: callback already registered on protocol %s", id(proto))
     await proto.start_realtime_hr()
 
 
 async def _on_sensor_activity(steps: int, calories: int):
     """Called by sensor stream when steps/calories change.
     
-    Only persists calories — sensor stream step count is stale on this
-    device. Real step data comes from the activity fetch (type 0x01).
+    The sensor stream provides the device's own step counter, which is the
+    authoritative source for today's steps.
     """
-    await _on_activity_update(0, calories)
+    await _on_activity_update(steps, calories)
 
 
-_activity_callback_registered = False
+_activity_callback_proto = None  # Track which protocol object has the activity callback
 
 async def start_sensor_stream():
     """Start sensor stream for real-time steps/calories."""
-    global _activity_callback_registered
+    global _activity_callback_proto
     proto = connection.protocol
     if proto is None:
         logger.warning("Cannot start sensor stream — not connected")
         return
-    if not _activity_callback_registered:
+    if _activity_callback_proto is not proto:
         proto.on_activity(_on_sensor_activity)
-        _activity_callback_registered = True
+        _activity_callback_proto = proto
     await proto.start_sensor_stream()
 
 
@@ -128,25 +160,29 @@ async def run_sync():
 
     logger.info("Starting sync...")
 
-    # Battery (always works, no auth needed)
+    # Battery & firmware (always works, no auth needed)
     try:
         battery = await proto.read_battery()
+        firmware = await proto.read_firmware_version()
         async with async_session() as session:
             info = (await session.execute(select(models.DeviceInfo))).scalar_one_or_none()
             if info:
                 info.battery_level = battery
+                if firmware:
+                    info.firmware_version = firmware
                 info.last_sync = datetime.now(timezone.utc)
             else:
                 session.add(
                     models.DeviceInfo(
                         battery_level=battery,
+                        firmware_version=firmware,
                         last_sync=datetime.now(timezone.utc),
                     )
                 )
             await session.commit()
-        logger.info("Battery: %d%%", battery)
+        logger.info("Battery: %d%%%s", battery, f", Firmware: {firmware}" if firmware else "")
     except Exception as e:
-        logger.error("Battery sync error: %s", e)
+        logger.error("Battery/firmware sync error: %s", e)
 
     # Persist calories from sensor stream. Steps from the sensor stream are
     # unreliable on this device (stale cached value); real step counts come
@@ -197,11 +233,18 @@ async def run_sync():
                             models.HeartRate.timestamp >= since
                         )
                     )
-                    existing_ts = {row[0] for row in result}
+                    # Normalize to naive UTC for comparison (SQLite stores naive)
+                    existing_ts = {
+                        row[0].replace(tzinfo=None) if row[0] and hasattr(row[0], 'tzinfo') and row[0].tzinfo else row[0]
+                        for row in result
+                    }
 
                 for r in readings:
-                    if r.timestamp not in existing_ts:
-                        session.add(models.HeartRate(timestamp=r.timestamp, bpm=r.bpm))
+                    # Strip timezone for DB storage and comparison
+                    ts_naive = r.timestamp.replace(tzinfo=None) if r.timestamp.tzinfo else r.timestamp
+                    if ts_naive not in existing_ts:
+                        session.add(models.HeartRate(timestamp=ts_naive, bpm=r.bpm))
+                        existing_ts.add(ts_naive)
                         inserted += 1
                         if inserted % 5000 == 0:
                             await session.commit()
@@ -219,12 +262,13 @@ async def run_sync():
     else:
         logger.warning("Health data sync SKIPPED — ECDH auth not available. Reconnect to device to enable.")
 
-    logger.info("Sync complete")
+    logger.info("Sync complete — re-enabling HR stream...")
 
     # Let BLE settle after data fetches, then re-enable HR
     await asyncio.sleep(1)
     try:
         await proto.enable_hr_measurement()
+        logger.info("HR stream re-enabled after sync")
     except Exception as e:
         logger.warning("HR re-enable after sync failed: %s", e)
 
@@ -295,9 +339,26 @@ async def _sync_health_data(proto):
 
     # Sleep
     try:
-        sessions_data = await proto.fetch_sleep(since)
+        # Use the most recent sleep date to avoid re-fetching already-ACK'd data
+        async with async_session() as session:
+            latest_sleep = (await session.execute(
+                select(models.Sleep.date).order_by(desc(models.Sleep.date)).limit(1)
+            )).scalar_one_or_none()
+        if latest_sleep:
+            # Fetch from the day after the last known sleep record
+            sleep_since = datetime.strptime(latest_sleep, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        else:
+            sleep_since = since
+        sessions_data = await proto.fetch_sleep(sleep_since)
         if sessions_data:
             import json
+            # Warn if adjacent nights have identical durations
+            totals = [(s.date, s.total_minutes) for s in sessions_data]
+            for i in range(1, len(totals)):
+                if totals[i][1] == totals[i-1][1]:
+                    logger.warning("BLE Sleep: nights %s and %s have identical duration %d min",
+                                    totals[i-1][0], totals[i][0], totals[i][1])
+
             async with async_session() as session:
                 for s in sessions_data:
                     exists = (
@@ -307,6 +368,9 @@ async def _sync_health_data(proto):
                     ).scalar_one_or_none()
                     stages_str = json.dumps(s.stages) if s.stages else None
                     if not exists:
+                        logger.info("BLE Sleep: INSERT %s — %d min (D=%d L=%d R=%d A=%d)",
+                                     s.date, s.total_minutes, s.deep_minutes,
+                                     s.light_minutes, s.rem_minutes, s.awake_minutes)
                         session.add(models.Sleep(
                             date=s.date,
                             total_minutes=s.total_minutes,
@@ -317,6 +381,10 @@ async def _sync_health_data(proto):
                             stages_json=stages_str,
                         ))
                     else:
+                        changed = exists.total_minutes != s.total_minutes
+                        logger.info("BLE Sleep: UPDATE %s — %d→%d min%s",
+                                     s.date, exists.total_minutes, s.total_minutes,
+                                     " (changed)" if changed else " (same)")
                         exists.total_minutes = s.total_minutes
                         exists.deep_minutes = s.deep_minutes
                         exists.light_minutes = s.light_minutes
@@ -328,30 +396,29 @@ async def _sync_health_data(proto):
     except Exception as e:
         logger.error("BLE Sleep sync error: %s", e, exc_info=True)
 
-    # Activity
+    # Activity — fetch per-minute samples and aggregate to daily totals.
+    # For today's date, the real-time sensor stream may provide a more up-to-date
+    # step count, so we use MAX() to keep the higher value.
     try:
         activities = await proto.fetch_activity(since)
         if activities:
             async with async_session() as session:
                 for a in activities:
-                    exists = (
-                        await session.execute(
-                            select(models.Activity).where(models.Activity.date == a.date)
-                        )
-                    ).scalar_one_or_none()
-                    if not exists:
-                        session.add(models.Activity(
-                            date=a.date, steps=a.steps,
-                            calories=a.calories, distance=a.distance
-                        ))
-                    else:
-                        exists.steps = max(a.steps, exists.steps)
-                        if a.calories > 0:
-                            exists.calories = a.calories
-                        if a.distance > 0:
-                            exists.distance = a.distance
+                    # Atomic upsert — avoids SQLAlchemy session-flush race conditions
+                    # that can cause duplicate-insert conflicts when the same date
+                    # appears more than once in the activities list.
+                    await session.execute(
+                        text(
+                            "INSERT INTO activity (date, steps, calories, distance) "
+                            "VALUES (:date, :steps, :calories, 0) "
+                            "ON CONFLICT(date) DO UPDATE SET "
+                            "steps = MAX(activity.steps, excluded.steps), "
+                            "calories = MAX(activity.calories, excluded.calories)"
+                        ),
+                        {"date": a.date, "steps": a.steps, "calories": a.calories},
+                    )
                 await session.commit()
-                logger.info("BLE Activity: saved %d day records", len(activities))
+                logger.info("BLE Activity: saved/updated %d day records", len(activities))
     except Exception as e:
         logger.error("BLE Activity sync error: %s", e, exc_info=True)
 

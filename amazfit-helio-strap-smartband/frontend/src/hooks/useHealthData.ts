@@ -27,5 +27,12 @@ export function useHealthData<T>(endpoint: string, interval?: number) {
     }
   }, [fetchData, interval]);
 
+  // Refetch when a sync completes
+  useEffect(() => {
+    const handler = () => fetchData();
+    window.addEventListener('sync-complete', handler);
+    return () => window.removeEventListener('sync-complete', handler);
+  }, [fetchData]);
+
   return { data, loading, error, refetch: fetchData };
 }

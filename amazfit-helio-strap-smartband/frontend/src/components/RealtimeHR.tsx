@@ -11,6 +11,8 @@ interface HRStats {
   avg: number | null;
   min: number | null;
   max: number | null;
+  min_ts: string | null;
+  max_ts: string | null;
   count: number;
   sleep_rhr: number | null;
   period: string;
@@ -48,6 +50,12 @@ export default function RealtimeHR() {
   }, []);
 
   const tz = localStorage.getItem('tz') || Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+  const fmtTs = (iso: string | null) => {
+    if (!iso) return undefined;
+    const d = new Date(iso);
+    return d.toLocaleString([], { timeZone: tz, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
+  };
 
   const realtimePoints = wsData.map((d: any) => ({
     time: new Date(d.timestamp).toLocaleTimeString([], { timeZone: tz, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }),
@@ -98,8 +106,8 @@ export default function RealtimeHR() {
       {stats && stats.avg !== null && (
         <div className="flex gap-1.5 mb-1.5">
           <StatBadge label="Avg" value={stats.avg} unit="bpm" color="#60A5FA" />
-          <StatBadge label="Min" value={stats.min} unit="bpm" color="#34D399" />
-          <StatBadge label="Max" value={stats.max} unit="bpm" color="#EF4444" />
+          <StatBadge label="Min" value={stats.min} unit="bpm" color="#34D399" tooltip={fmtTs(stats.min_ts)} />
+          <StatBadge label="Max" value={stats.max} unit="bpm" color="#EF4444" tooltip={fmtTs(stats.max_ts)} />
           <StatBadge label="Sleep RHR" value={stats.sleep_rhr} unit="bpm" color="#A78BFA" />
         </div>
       )}
@@ -159,19 +167,25 @@ export default function RealtimeHR() {
   );
 }
 
-function StatBadge({ label, value, unit, color }: {
+function StatBadge({ label, value, unit, color, tooltip }: {
   label: string;
   value: number | null;
   unit: string;
   color: string;
+  tooltip?: string;
 }) {
   return (
-    <div className="flex-1 bg-gray-800/60 rounded-lg px-2 py-1 text-center">
+    <div className="flex-1 bg-gray-800/60 rounded-lg px-2 py-1 text-center relative group" title={tooltip}>
       <div className="text-[8px] text-gray-500 uppercase tracking-wide">{label}</div>
       <div className="text-sm font-bold leading-tight" style={{ color }}>
         {value !== null ? value : '--'}
       </div>
       <div className="text-[7px] text-gray-600">{unit}</div>
+      {tooltip && (
+        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 hidden group-hover:block bg-gray-700 text-gray-200 text-[9px] px-2 py-0.5 rounded whitespace-nowrap z-10">
+          {tooltip}
+        </div>
+      )}
     </div>
   );
 }

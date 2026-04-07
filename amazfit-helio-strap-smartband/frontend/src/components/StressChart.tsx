@@ -29,7 +29,7 @@ export default function StressChart() {
     <div className="bg-gray-900 rounded-xl p-3 h-full flex flex-col">
       <div className="flex items-center justify-between mb-1">
         <h2 className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Stress<InfoTooltip text="Stress level 0-100 measured per minute. Lower is better. Based on heart rate variability analysis. The Helio Strap may not actively compute stress — data depends on device firmware." /></h2>
-        {latest !== null && <span className="text-lg font-bold" style={{ color: latestColor }}>{latest}</span>}
+        {latest !== null && <span className="text-lg font-bold" style={{ color: latestColor }}>{latest}<span className="text-xs text-gray-500 font-normal"> / 100</span></span>}
       </div>
       {loading ? (
         <div className="flex-1 flex items-center justify-center text-gray-600 text-xs">Loading...</div>
@@ -66,7 +66,7 @@ export default function StressChart() {
                 contentStyle={{ backgroundColor: '#1F2937', border: 'none', borderRadius: 6, fontSize: 11 }}
                 formatter={(value: number) => {
                   const c = stressColor(value);
-                  return [<span style={{ color: c }}>{value}</span>, 'level'];
+                  return [<span style={{ color: c }}>{value} / 100</span>, 'Stress'];
                 }}
               />
               <Bar dataKey="level" radius={[1, 1, 0, 0]}>

@@ -26,55 +26,105 @@ function printCurrentFile(): void {
   const tab = getActiveTab();
   if (!tab) return;
 
-  let printContent: string;
+  let bodyContent: string;
 
   if (tab.language === 'markdown') {
-    printContent = getPreviewHTMLForExport();
+    const rawHtml = getPreviewHTMLForExport();
+    const bodyMatch = rawHtml.match(/<body>([\s\S]*)<\/body>/);
+    bodyContent = bodyMatch ? bodyMatch[1] : rawHtml;
   } else {
     const content = tab.model.getValue()
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;');
-    printContent = `<!DOCTYPE html><html><head><style>
-      body { font-family: 'SF Mono', Menlo, monospace; font-size: 12px; line-height: 1.5; padding: 24px; white-space: pre-wrap; word-wrap: break-word; }
-    </style></head><body><pre>${content}</pre></body></html>`;
+    bodyContent = `<pre>${content}</pre>`;
   }
 
-  // Temporarily replace main document body for printing, then restore
-  const appEl = document.getElementById('app')!;
-  const settingsEl = document.getElementById('settings-overlay')!;
-  const originalDisplay = appEl.style.display;
-  const originalSettingsDisplay = settingsEl.style.display;
+  // Save state for restoration
+  const savedBody = document.body.innerHTML;
+  const savedTitle = document.title;
+  const savedDataTheme = document.documentElement.getAttribute('data-theme');
 
-  // Create print container
-  const printContainer = document.createElement('div');
-  printContainer.id = 'print-container';
-  printContainer.innerHTML = printContent;
-  printContainer.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;z-index:9999;background:#fff;overflow:auto;';
+  // 1. Disable ALL stylesheets — prevents CSS variables (--fg: grey) from cascading
+  const sheets = Array.from(document.styleSheets);
+  sheets.forEach(s => { try { s.disabled = true; } catch (_) { /* cross-origin */ } });
 
-  // Add print-only styles
+  // 2. Remove theme attribute
+  document.documentElement.removeAttribute('data-theme');
+
+  // 3. Set title to just the filename (macOS prints document.title as header)
+  document.title = tab.filePath ? tab.filePath.split('/').pop()! : 'Document';
+
+  // 4. Inject a clean print stylesheet with !important to override everything
   const printStyle = document.createElement('style');
-  printStyle.id = 'print-style';
+  printStyle.id = 'neo-print-style';
   printStyle.textContent = `
-    @media print {
-      #app, #settings-overlay { display: none !important; }
-      #print-container { position: static !important; z-index: auto !important; }
+    *, *::before, *::after { color: #000 !important; background: transparent !important; }
+    html, body {
+      background: #fff !important;
+      color: #000 !important;
+      font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif !important;
+      font-size: 14px !important;
+      line-height: 1.7 !important;
+      height: auto !important;
+      overflow: visible !important;
+      margin: 0 !important;
+      padding: 0 !important;
     }
-    @media screen {
-      #print-container { display: none !important; }
+    #print-content { padding: 20px; color: #000 !important; }
+    #print-content pre {
+      font-family: 'SF Mono', Menlo, Monaco, 'Courier New', monospace !important;
+      font-size: 12px !important;
+      line-height: 1.5 !important;
+      white-space: pre-wrap !important;
+      word-wrap: break-word !important;
+      color: #000 !important;
+    }
+    #print-content code { background: #f5f5f5 !important; padding: 2px 4px !important; border-radius: 3px !important; }
+    #print-content pre code { display: block !important; padding: 12px !important; }
+    #print-content h1, #print-content h2, #print-content h3,
+    #print-content h4, #print-content h5, #print-content h6 {
+      color: #000 !important; margin-top: 1em !important; margin-bottom: 0.5em !important;
+    }
+    #print-content p { margin-bottom: 0.8em !important; }
+    #print-content a { color: #000 !important; text-decoration: underline !important; }
+    #print-content blockquote {
+      border-left: 3px solid #999 !important; padding-left: 12px !important;
+      color: #333 !important; margin: 0.8em 0 !important;
+    }
+    #print-content table { border-collapse: collapse !important; }
+    #print-content th, #print-content td {
+      border: 1px solid #999 !important; padding: 6px 12px !important; color: #000 !important;
     }
   `;
-
   document.head.appendChild(printStyle);
-  document.body.appendChild(printContainer);
 
-  window.print();
+  // 5. Replace body with ONLY the print content
+  document.body.innerHTML = `<div id="print-content">${bodyContent}</div>`;
 
-  // Cleanup after print dialog closes
-  setTimeout(() => {
-    printContainer.remove();
+  // 6. Restore ONLY after the print dialog closes (afterprint event).
+  //    window.print() is async in WKWebView — restoring immediately would
+  //    destroy the print content before the dialog captures it.
+  const restore = () => {
+    window.removeEventListener('afterprint', restore);
     printStyle.remove();
-  }, 500);
+    document.body.innerHTML = savedBody;
+    document.title = savedTitle;
+    if (savedDataTheme) {
+      document.documentElement.setAttribute('data-theme', savedDataTheme);
+    }
+    sheets.forEach(s => { try { s.disabled = false; } catch (_) { /* cross-origin */ } });
+    // Reload to reinitialize Monaco (can't survive innerHTML replacement)
+    setTimeout(() => window.location.reload(), 200);
+  };
+  window.addEventListener('afterprint', restore);
+
+  // 7. Wait for WKWebView to fully render the clean content, then print
+  requestAnimationFrame(() => {
+    setTimeout(() => {
+      window.print();
+    }, 500);
+  });
 }
 
 // Apply initial theme

@@ -274,9 +274,11 @@ apptoken: {token}
 | Stress | ✅ Type 0x13 | ✅ `/events` | BLE often empty (device may not compute) |
 | HRV | ✅ Type 0x49 | ❌ Not found | BLE only |
 | Battery | ✅ 0x2A19 | — | BLE only |
-| Device config | ✅ Endpoint 0x000A | — | BLE only |
+| Device config | ✅ Endpoint 0x000A (encrypted) | — | BLE only, requires ECDH + AES |
 
 **Recommendation**: Use BLE (ECDH) as primary data source — it provides higher resolution data and doesn't require cloud authentication. The cloud API serves as a fallback and is essential for auth key extraction.
+
+**Note on config**: Device config commands (SpO2 enable, stress enable, etc.) require AES-ECB encryption post-ECDH. Unencrypted config commands are silently dropped. See PROTOCOL_bluetooth.md §14 for full encryption protocol.
 
 ---
 

@@ -101,3 +101,12 @@ Helio Strap (BLE 5.2) → bleak → Huami Auth → Protocol Parser → SQLite �
 - The BLE protocol implementation is based on [Gadgetbridge](https://codeberg.org/Freeyourgadget/Gadgetbridge)'s reverse-engineered Zepp OS support
 - On macOS, devices are identified by CoreBluetooth UUID (not MAC address)
 - Some data types (body temperature, respiratory rate) are experimental and may not work on all firmware versions
+
+## Disclaimer
+
+**Use this software at your own risk.** This is an unofficial, community-developed tool that communicates directly with the Amazfit Helio Strap via Bluetooth. It is not affiliated with, endorsed by, or supported by Huami, Zepp Health, or Amazfit.
+
+- This software is provided "as is", without warranty of any kind. The authors are not responsible for any damage to your device, data loss, or any other issues arising from its use.
+- **This is not a medical device.** The health data displayed (heart rate, SpO2, stress, HRV, sleep) is for informational and educational purposes only. It should not be used to diagnose, treat, or monitor any medical condition.
+- **Always consult a qualified healthcare professional** for medical advice, diagnosis, or treatment. Do not rely on data from this application to make health or medical decisions.
+- Writing to BLE characteristics may alter device behavior. Use caution when running test scripts or experimental features.

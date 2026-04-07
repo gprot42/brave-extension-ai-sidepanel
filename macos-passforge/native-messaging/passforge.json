@@ -1,0 +1,9 @@
+{
+  "name": "org.keepassxc.keepassxc_browser",
+  "description": "Native messaging host for KeePassXC browser integration",
+  "path": "/usr/local/bin/keepassxc-proxy",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://<extension-id-here>/"
+  ]
+}

@@ -130,5 +130,9 @@ Tables: HeartRate, Sleep, SpO2, Stress, HRV, Activity, DeviceInfo
 
 - Auth key requires one-time pairing via Zepp app + extraction
 - macOS BLE uses CoreBluetooth via bleak — device addressed by UUID not MAC
-- Some data types (SpO2 sync, body temp) are experimental in Gadgetbridge
-- Real-time HR requires enabling Huami continuous monitoring mode
+- Real-time HR requires enabling Huami continuous monitoring mode via 0x0006 keepalive
+- All config commands (SpO2, stress, HR, sleep breathing) require ECDH auth + AES-ECB encryption
+- Config commands sent without encryption are silently dropped (no response/timeout)
+- CONFIG_TYPE_BOOL must be 0x0b (not 0x00); wrong type results in status 0x02 (accepted but not applied)
+- CONFIG_SPO2_ALL_DAY is config ID 0x04 (not 0x31 as originally guessed)
+- SpO2 data only appears after device collects readings (10-30 min after enable)

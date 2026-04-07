@@ -6,6 +6,10 @@ backend/.venv/
 helio_data.db
 *.db
 *.bin
+*.so
+native_libs/
+helio_data.db-shm
+helio_data.db-wal
 node_modules/
 frontend/dist/
 .DS_Store

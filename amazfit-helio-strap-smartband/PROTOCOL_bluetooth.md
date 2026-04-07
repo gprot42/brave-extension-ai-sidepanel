@@ -359,11 +359,97 @@ The `expected_count` field from the control response is the **number of minutes*
 
 ---
 
-## 10. Type 0x25 — SpO2 Data
+## 10. Type 0x25 — SpO2 Data (Normal)
 
 **Requires ECDH authentication.**
 
-65-byte records with version byte, status flags, and SpO2 percentage value. Decoding follows Gadgetbridge `HuamiSpO2Parser` format.
+Decoding follows Gadgetbridge `FetchSpo2NormalOperation.java`.
+
+### Raw data format
+- **Version header**: 1 byte (expected `0x02`)
+- **Record size**: 65 bytes
+- **Validation**: `(stripped_length - 1) % 65 == 0`
+
+### 65-byte record structure
+```
+bytes[0:4]  timestamp     int32 LE  (Unix epoch seconds)
+byte[4]     spo2_raw      int8      (signed — see decoding below)
+bytes[5:65] unknown       60 bytes  (mostly zeros, additional metadata)
+```
+
+### SpO2 value decoding (sign-bit encoding)
+```
+If bit 7 is set (raw >= 0x80):
+  → Auto measurement (device-initiated, e.g., during sleep)
+  → actual_spo2 = raw_byte - 128
+
+If bit 7 is clear (raw < 0x80):
+  → Manual measurement (user-initiated from device)
+  → actual_spo2 = raw_byte
+```
+
+Examples:
+- Raw `0xE1` (225) → auto, SpO2 = 225 - 128 = **97%**
+- Raw `0x60` (96) → manual, SpO2 = **96%**
+
+### Verified data sizes
+| Stripped bytes | - 1 header | ÷ 65 | Records |
+|----------------|------------|------|---------|
+| 3641 | 3640 | 56.0 | 56 |
+| 4031 | 4030 | 62.0 | 62 |
+| 4096 | 4095 | 63.0 | 63 |
+
+### Type 0x26 — SpO2 Sleep (untested)
+30-byte records with version header. Each record: 4-byte timestamp, 1-byte SpO2 (no sign-bit encoding), 1-byte duration, 6-byte high values, 6-byte low values, 8-byte signal quality, 4-byte extended.
+
+### Auto-enable
+
+SpO2 and health monitoring must be enabled on the device via config endpoint `0x000A`.
+All config commands **require ECDH authentication** and **AES encryption** (see §14).
+
+**SET command wire format (Gadgetbridge ZeppOsConfigService):**
+```
+[0x05]      CMD_SET
+[0x08]      Config group: HEALTH
+[0x03]      Config version
+[0x00]      Padding / reserved
+[0x01]      Arg count (1 config at a time)
+[id]        Config ID (see table below)
+[0x0b]      Type: BOOL (Gadgetbridge ConfigType.BOOL = 0x0b)
+[0x01]      Value: 0x01=enabled, 0x00=disabled
+```
+
+**GET (request) command:**
+```
+[0x03]      CMD_REQUEST
+[0x01]      Include constraints flag
+[0x08]      Config group: HEALTH
+[0x01]      Arg count
+[id]        Config ID
+```
+
+**Health config IDs (empirically confirmed via encrypted GET readback):**
+| ID | Name | Type | Status | Notes |
+|----|------|------|--------|-------|
+| `0x04` | SPO2_ALL_DAY_MONITORING | BOOL | **Confirmed** | SET + GET readback returns value=True |
+| `0x12` | SLEEP_BREATHING_QUALITY | BOOL | Used | Enables sleep-phase SpO2 collection |
+| `0x17` | HR_ALL_DAY_MONITORING | BOOL | Used | Enables continuous heart rate monitoring |
+| `0x18` | HR_HIGH_ALERT | BYTE | Untested | Heart rate high threshold |
+| `0x19` | HR_LOW_ALERT | BYTE | Untested | Heart rate low threshold |
+| `0x31` | Unknown (was SPO2 guess) | BOOL | **Wrong** | SET ACK'd but GET returns value=False (doesn't stick) |
+| `0x32` | SPO2_LOW_ALERT | BYTE | Untested | SpO2 low threshold alert |
+| `0x39` | STRESS_ALL_DAY_MONITORING | BOOL | Used | Enables periodic stress measurement |
+| `0x5a` | — | — | **Invalid** | SET returns error status 0x05 (not found) |
+
+**Previously incorrect IDs (do NOT use):**
+- ~~0x31 for SpO2~~ — SET ACK's but GET confirms value is not stored. Use `0x04` instead.
+- ~~0x5a~~ — Returns error status 0x05 (config ID not found on device).
+- ~~0x5D, 0x5E, 0x5F, 0x60~~ — These were guessed and do not exist on the Helio Strap.
+- ~~CONFIG_TYPE_BOOL = 0x00~~ — Wrong. Gadgetbridge uses `0x0b` for BOOL. Using 0x00 results in SET ACK `0602` (wrong type) instead of `0601` (success).
+
+The app enables SpO2 all-day (`0x04`), sleep breathing (`0x12`), and stress all-day (`0x39`) on connect after successful ECDH auth, using AES-encrypted config frames.
+
+**Note on on-demand SpO2:** Gadgetbridge has not implemented on-demand (phone-triggered) SpO2 measurement for Zepp OS. Only the device itself can initiate a manual reading. The endpoint and commands are unknown without BLE sniffing.
 
 ---
 
@@ -387,62 +473,227 @@ Per-minute HRV readings. Each record contains RMSSD and SDNN values. Thousands o
 
 **Requires ECDH authentication.**
 
-594-byte session blobs containing sleep stage arrays (deep, light, REM, awake) with timestamps.
+Each sleep session is a fixed **594-byte blob**. Multi-night fetches return N×594 bytes concatenated.
+
+### Session blob structure (594 bytes)
+
+Confirmed by Gadgetbridge `HuamiSleepSessionSampleProvider` and `libdataProcess.so` string analysis.
+
+```
+Offset  Size  Field                 Notes
+──────  ────  ────────────────────  ──────────────────────────────
+0x00    4     ts_session            uint32 LE, Unix epoch — session reference timestamp
+0x04    4     ts_midnight           uint32 LE, Unix epoch — midnight of the sleep date
+0x08    1     unknown               always 0x01
+0x09    1     unknown               always 0x01
+0x0A    2     sleep_start_min       uint16 LE — minutes from midnight (onset)
+0x0C    2     sleep_end_min         uint16 LE — minutes from midnight (wakeup)
+0x15    1     avg_hr                uint8 — average heart rate during session
+0x16    1     score                 uint8 — sleep quality score (0–100)
+0x54    1     num_stages            uint8 — count of stage entries that follow
+0x56    5×N   stage_entries[]       see Stage Entry format below
+        ...   (zero padding)        fills remainder of blob up to offset 0x24A
+0x24A   2     total_rem_min         uint16 LE — REM sleep minutes (device pre-computed)
+0x24C   2     total_light_min       uint16 LE — light sleep minutes
+0x24E   2     total_deep_min        uint16 LE — deep sleep minutes
+0x250   2     total_wake_min        uint16 LE — awake minutes within session
+```
+
+### Stage entry format (5 bytes each, starting at offset 0x56)
+
+```
+bytes[0:2]  seg_start    uint16 LE — start minute (relative to ts_midnight)
+bytes[2:4]  seg_end      uint16 LE — end minute (relative to ts_midnight)
+byte[4]     seg_type     uint8     — stage type code
+```
+
+### Stage type codes
+
+| Type | Stage   | Color in Zepp App |
+|------|---------|-------------------|
+| `4`  | Light   | `sleep_light_color` |
+| `5`  | Deep    | `sleep_deep_color` |
+| `7`  | Awake   | `sleep_wake_color` |
+| `8`  | REM     | `sleep_rem_color` |
+
+### Night date attribution
+
+The `ts_session` timestamp is converted to local time. If the local hour is before noon (12:00), the session is attributed to the **previous** calendar day (e.g., 3am April 5 local → night of April 4).
+
+### Pre-computed totals
+
+The device firmware pre-computes sleep stage totals at offsets 0x24A–0x251. These values match (or closely approximate) the sum of stage entry durations. The app prefers blob totals when non-zero, falling back to summing stage entries.
+
+### Native algorithm (`libdataProcess.so`)
+
+The Zepp app uses a native C library for sleep analysis that takes **3 bytes per minute** of activity data + **1 byte per minute** HR data + PersonInfo (gender, height, weight, age). The Helio Strap firmware runs this algorithm on-device and stores the results as 594-byte session blobs. Our app reads the pre-computed results directly — no client-side sleep classification needed.
+
+Key native functions (from library strings):
+- `findStartSleepAndWakeUp()` — boundary detection using HR + activity
+- `coreAlgoForGetSleepTime()` — core sleep time computation
+- `getStageSleep()` — stage classification
+- `find_awake()` — awake period detection
+- `findNoWearSection()` — not-worn period elimination
 
 ---
 
 ## 14. Device Configuration (endpoint 0x000A via 0x0016/0x0017)
 
-**Requires ECDH authentication.**
+**Requires ECDH authentication + AES encryption.**
 
 The Zepp OS Config Service allows reading/writing device settings via the chunked protocol.
+Config commands sent without encryption are **silently dropped** (no response, timeout).
+
+### Encryption Requirement (Discovered via Testing)
+
+| Test | Result |
+|------|--------|
+| Unencrypted config before ECDH | TIMEOUT (all IDs) |
+| Unencrypted config after ECDH | TIMEOUT (all IDs) |
+| **Encrypted config after ECDH** | **Response received** |
+
+**Conclusion**: All config commands on endpoint 0x000A **must** be AES-encrypted using the ECDH session key.
+
+### AES Encryption Format (Gadgetbridge Huami2021ChunkedEncoder)
+
+Post-ECDH, all chunked frames must be encrypted:
+
+1. **Message key derivation** (per-frame):
+   ```python
+   message_key[i] = session_key[i] ^ handle  # i = 0..15
+   ```
+   Where `handle` is the per-frame counter byte from the chunked header (byte[3]).
+
+2. **Plaintext construction**:
+   ```
+   [original_payload]           (N bytes — the actual config command)
+   [enc_write_seq_nr]           (4 bytes, uint32 LE — increments per encrypted write)
+   [CRC32(payload + seq_nr)]    (4 bytes, uint32 LE)
+   [zero_padding]               (pad to 16-byte boundary)
+   ```
+
+3. **Encrypt**: AES-ECB with `message_key` (each 16-byte block independently)
+
+4. **Frame header flag**: `0x0b` = `FLAG_FIRST(0x01) | FLAG_LAST(0x02) | FLAG_ENCRYPTED(0x08)`
+   - Header bytes[5:7] contain the **original** (unencrypted) payload length
+   - Header bytes[11+] contain the **encrypted** payload (longer due to seq+crc+padding)
+
+5. **Decryption** of responses: Same process — derive `message_key` from response handle byte, decrypt, extract first `orig_len` bytes.
+
+### Encrypted Chunked Frame Format
+
+```
+byte[0]     0x03  (protocol marker)
+byte[1]     0x0b  (flags: first + last + encrypted)
+byte[2]     0x00  (reserved)
+byte[3]     handle  (counter, wraps at 0xFF — used for message key derivation)
+byte[4]     0x00  (chunk count: 0 = single chunk)
+bytes[5:7]  original_payload_length  uint16 LE  (length BEFORE encryption)
+bytes[7:9]  0x00 0x00  (padding)
+bytes[9:11] endpoint_id  uint16 LE  (0x000A for config)
+bytes[11+]  encrypted_payload  (AES-ECB encrypted, padded to 16-byte boundary)
+```
 
 ### Config Command Format
 
 #### CMD_SET (0x05) — write a config value
 ```
-Payload on endpoint 0x000A:
+Payload on endpoint 0x000A (before encryption):
 byte[0]     0x05  (CMD_SET)
-byte[1]     config_group
-byte[2]     config_version
-byte[3]     config_id
-byte[4]     config_type  (0x01=BOOL, 0x06=SHORT, 0x10=STRING)
-bytes[5+]   value
+byte[1]     config_group      (0x08 = HEALTH)
+byte[2]     config_version    (0x03)
+byte[3]     0x00  (padding / reserved)
+byte[4]     arg_count         (0x01 = one config item)
+byte[5]     config_id         (e.g., 0x04 for SpO2)
+byte[6]     config_type       (0x0b = BOOL)
+byte[7]     value             (0x01 = enabled, 0x00 = disabled)
 ```
 
-#### CMD_GET (0x04) — read a config value
+#### CMD_REQUEST (0x03) — read a config value
 ```
-Payload on endpoint 0x000A:
-byte[0]     0x04  (CMD_GET)
-byte[1]     config_group
-byte[2]     config_version
-byte[3]     config_id
-```
-
-Response (CMD_RESPONSE = 0x06):
-```
-byte[0]     0x06
-byte[1]     config_group
-byte[2]     config_version
-byte[3]     config_id
-byte[4]     config_type
-bytes[5+]   value
+Payload on endpoint 0x000A (before encryption):
+byte[0]     0x03  (CMD_REQUEST)
+byte[1]     0x01  (include constraints)
+byte[2]     config_group      (0x08 = HEALTH)
+byte[3]     arg_count         (0x01)
+byte[4]     config_id
 ```
 
-### Health Config Group (0x08, version 0x03)
+### Response Format
 
-| Config ID | Type | Name | Description |
-|-----------|------|------|-------------|
-| `0x5D` | BOOL | `HR_AUTO_MEASURE` | Continuous heart rate monitoring |
-| `0x5E` | BOOL | `BLOOD_OXYGEN_AUTO` | Auto blood oxygen measurement |
-| `0x5F` | BOOL | `SPO2_AUTO_MEASURE` | Auto SpO2 during sleep |
-| `0x60` | BOOL | `TEMP_AUTO_MEASURE` | Auto temperature measurement |
+**SET response** (CMD_RESPONSE = 0x06):
+```
+byte[0]     0x06  (CMD_RESPONSE)
+byte[1]     status
+```
 
-### Example: Enable auto SpO2
+| Status | Meaning |
+|--------|---------|
+| `0x01` | Success — config value written |
+| `0x02` | Wrong type — config_type byte incorrect |
+| `0x05` | Error — config ID not found on device |
+
+**GET response** (CMD_GET = 0x04):
+```
+byte[0]     0x04
+byte[1]     0x01
+byte[2]     config_group   (0x08)
+byte[3]     config_version (0x03)
+byte[4]     0x01
+byte[5]     0x01
+byte[6]     config_id
+byte[7]     config_type    (0x0b)
+byte[8]     0x01
+byte[9]     0x00
+byte[10]    value          (0x00 or 0x01)
+```
+
+### Config Types (Gadgetbridge ZeppOsConfigService.ConfigType)
+
+| Value | Type | Size |
+|-------|------|------|
+| `0x0b` | BOOL | 1 byte (0x00 or 0x01) |
+| `0x01` | BYTE | 1 byte |
+| `0x06` | SHORT | 2 bytes LE |
+| `0x10` | STRING | Null-terminated |
+
+**Critical**: Using the wrong type byte (e.g., `0x00` instead of `0x0b` for BOOL) results in SET response `0x02` (wrong type) — the device acknowledges the command but does not apply it.
+
+### Health Config Group (0x08, version 0x03) — Confirmed IDs
+
+| Config ID | Type | Name | Status | Diagnostic Result |
+|-----------|------|------|--------|-------------------|
+| **`0x04`** | BOOL | SPO2_ALL_DAY_MONITORING | **Confirmed** | SET→`0601`, GET→value=True |
+| `0x12` | BOOL | SLEEP_BREATHING_QUALITY | Used | SET→`0601` |
+| `0x17` | BOOL | HR_ALL_DAY_MONITORING | Used | SET→`0601` |
+| `0x39` | BOOL | STRESS_ALL_DAY_MONITORING | Used | SET→`0601` |
+| `0x31` | BOOL | Unknown | **Wrong for SpO2** | SET→`0601` but GET→value=False |
+| `0x5a` | — | — | **Invalid** | SET→`0605` (not found) |
+
+### Example: Enable auto SpO2 (encrypted)
 ```python
-payload = bytes([0x05, 0x08, 0x03, 0x5F, 0x01, 0x01])  # CMD_SET, HEALTH, v3, SPO2_AUTO, BOOL, True
-frame = build_chunked_frame(endpoint=0x000A, payload=payload)
+from Crypto.Cipher import AES
+import struct, zlib
+
+# Build config payload
+payload = bytes([0x05, 0x08, 0x03, 0x00, 0x01, 0x04, 0x0b, 0x01])
+
+# Append seq_nr + CRC32 + padding
+seq = struct.pack('<I', enc_write_seq_nr)
+to_crc = payload + seq
+crc = struct.pack('<I', zlib.crc32(to_crc) & 0xFFFFFFFF)
+plaintext = to_crc + crc + b'\x00' * ((16 - len(to_crc + crc) % 16) % 16)
+
+# Encrypt
+handle = next_handle()
+msg_key = bytes([session_key[i] ^ handle for i in range(16)])
+encrypted = AES.new(msg_key, AES.MODE_ECB).encrypt(plaintext)
+
+# Build frame
+frame = bytes([0x03, 0x0b, 0x00, handle, 0x00,
+               len(payload) & 0xFF, 0x00, 0x00, 0x00, 0x0A, 0x00]) + encrypted
 await client.write_gatt_char("0x0016", frame)
+enc_write_seq_nr += 1
 ```
 
 ---
@@ -520,4 +771,5 @@ All test scripts are in the `tests/` directory and use `.env` for credentials.
 | `tests/test_find_steps.py` | Step count protocol investigation |
 | `tests/test_read_steps.py` | GATT service enumeration for step-related chars |
 | `tests/test_spo2_config.py` | Device config: SpO2 auto-enable via endpoint 0x000A |
+| `tests/test_spo2_decode.py` | SpO2 raw data hex dump + record format analysis |
 | `extract_auth_key.sh` | Automated auth key extraction via ADB + Zepp API |

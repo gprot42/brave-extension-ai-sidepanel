@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16">
+  <!-- Shield background -->
+  <path d="M8 1 L15 4 L15 9 C15 12.5 11.5 15 8 15 C4.5 15 1 12.5 1 9 L1 4 Z"
+        fill="#2563eb" />
+  <!-- Letter P -->
+  <text x="5" y="11" font-family="Arial, sans-serif" font-size="8"
+        font-weight="bold" fill="#ffffff">P</text>
+</svg>

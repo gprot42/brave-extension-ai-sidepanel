@@ -1,6 +1,7 @@
 import { useHealthData } from '../hooks/useHealthData';
 import type { DeviceStatus } from '../types';
 import { useState } from 'react';
+import InfoTooltip from './InfoTooltip';
 
 interface ScannedDevice {
   name: string;
@@ -107,6 +108,7 @@ export default function DeviceStatusPanel() {
     } finally {
       setBusy(false);
       refetch();
+      window.dispatchEvent(new Event('sync-complete'));
     }
   };
 
@@ -154,9 +156,12 @@ export default function DeviceStatusPanel() {
           </div>
         )}
 
-        {/* Battery */}
+        {/* Battery & Firmware */}
         {status?.battery_level != null && (
           <span className="text-gray-400">Battery {status.battery_level}%</span>
+        )}
+        {status?.firmware_version && (
+          <span className="text-gray-500 text-[11px]">FW {status.firmware_version}</span>
         )}
 
         {/* State indicator */}
@@ -186,9 +191,10 @@ export default function DeviceStatusPanel() {
           <button
             onClick={handleSync}
             disabled={isBusy}
-            className="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 rounded-lg text-gray-300 text-sm disabled:opacity-50"
+            className="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 rounded-lg text-gray-300 text-sm disabled:opacity-50 flex items-center gap-1"
           >
             Sync
+            <InfoTooltip text="Real-time data (HR, steps, calories) flows automatically once connected. Sync fetches historical data (SpO2, sleep, stress, HRV, HR log) from the device's internal storage. This also runs automatically on connect and every 5 minutes." />
           </button>
         )}
 

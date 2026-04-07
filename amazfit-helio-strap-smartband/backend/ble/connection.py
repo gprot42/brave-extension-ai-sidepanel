@@ -134,6 +134,8 @@ class HelioConnection:
             self._set_state(ConnectionState.AUTHENTICATING)
             auth_key = bytes.fromhex(auth_key_hex)
             self._auth = HuamiAuth(self._client, auth_key)
+
+            # Full auth: Phase 1 (standard) + Phase 2 (ECDH)
             success = await self._auth.authenticate()
             if not success:
                 logger.warning("Auth failed — the auth key may be incorrect or expired")
@@ -148,23 +150,78 @@ class HelioConnection:
             )
 
         self._protocol = HelioProtocol(self._client)
-        self._config = ZeppOsConfig(self._client)
+
+        # Create config with session key for encrypted config commands
+        if self._auth and self._auth.session_key:
+            self._config = ZeppOsConfig(
+                self._client,
+                session_key=self._auth.session_key,
+                enc_seq_nr=self._auth.enc_seq_nr,
+            )
+        else:
+            self._config = ZeppOsConfig(self._client)
+
+        # Enable health monitoring after ECDH (requires encrypted config)
+        if self.is_zepp_authenticated:
+            await self._enable_health_monitoring()
+
         self._set_state(ConnectionState.CONNECTED)
         logger.info("Connected successfully")
         return True
+
+    async def _enable_health_monitoring(self):
+        """Enable all-day health monitoring features on the device.
+
+        Sends AES-encrypted config commands on endpoint 0x000A after ECDH auth.
+        Uses start()/stop() lifecycle to manage 0x0017 notifications once for the batch.
+        Verifies each SET with a GET readback.
+        """
+        if not self._config:
+            return
+        try:
+            await self._config.start()
+            for name, setter, getter in [
+                ("SpO2 all-day", self._config.set_spo2_all_day, self._config.get_spo2_all_day),
+                ("Sleep breathing/SpO2", self._config.set_sleep_breathing, self._config.get_sleep_breathing),
+                ("Stress all-day", self._config.set_stress_all_day, self._config.get_stress_all_day),
+            ]:
+                try:
+                    ok = await setter(True)
+                    if ok:
+                        # Verify with GET readback
+                        readback = await getter()
+                        if readback is True:
+                            logger.info("%s monitoring: enabled (verified)", name)
+                        elif readback is None:
+                            logger.warning("%s monitoring: SET OK but GET failed (timeout)", name)
+                        else:
+                            logger.error("%s monitoring: SET OK but readback=False — device rejected?", name)
+                    else:
+                        logger.error("%s monitoring: FAILED to enable", name)
+                except Exception as e:
+                    logger.warning("Failed to enable %s: %s", name, e)
+        finally:
+            await self._config.stop()
 
     async def disconnect(self):
         """Disconnect from the device."""
         self._auto_reconnect = False
         if self._reconnect_task and not self._reconnect_task.done():
             self._reconnect_task.cancel()
+            try:
+                await asyncio.wait_for(self._reconnect_task, timeout=2.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
         if self._protocol:
             try:
-                await self._protocol.stop_realtime_hr()
-            except Exception:
+                await asyncio.wait_for(self._protocol.stop_realtime_hr(), timeout=3.0)
+            except (asyncio.TimeoutError, Exception):
                 pass
         if self._client and self._client.is_connected:
-            await self._client.disconnect()
+            try:
+                await asyncio.wait_for(self._client.disconnect(), timeout=3.0)
+            except asyncio.TimeoutError:
+                logger.warning("BLE client disconnect timed out")
         self._protocol = None
         self._set_state(ConnectionState.DISCONNECTED)
         logger.info("Disconnected")

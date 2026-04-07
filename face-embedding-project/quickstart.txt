@@ -1,0 +1,40 @@
+# Face Matching Quick Start Guide
+# ================================
+
+# Basic usage (uses defaults):
+./.venv/bin/python3 match_faces.py
+
+# Recommended settings for best accuracy:
+./.venv/bin/python3 match_faces.py \
+  --reference-imgs reference-images/ \
+  --photo-dir ./photos/ \
+  --output-file matches.txt \
+  --person-name "John Doe" \
+  --model ArcFace \
+  --threshold 0.68 \
+  --detector-backend retinaface
+
+# Parameters explained:
+# --reference-imgs     : A folder with reference images OR individual file paths
+# --model ArcFace      : Best accuracy (alternatives: FaceNet, SFace, VGG-Face)
+# --threshold 0.68     : ArcFace default. Lower = more matches, higher = stricter
+# --detector-backend   : retinaface (best) or mtcnn (good for difficult photos)
+# --distance-metric    : cosine (default), euclidean, or euclidean_l2
+
+# Alternative: VGG-Face with euclidean distance (sometimes more accurate):
+./.venv/bin/python3 match_faces.py \
+  --reference-imgs reference-images/ \
+  --photo-dir ./photos/ \
+  --output-file matches.txt \
+  --person-name "John Doe" \
+  --model VGG-Face \
+  --threshold 0.60 \
+  --detector-backend retinaface \
+  --distance-metric euclidean
+
+# For large photo sets (5000+), add --enforce-detection to skip photos without faces:
+./.venv/bin/python3 match_faces.py \
+  --reference-imgs reference-images/ \
+  --photo-dir /path/to/5000/photos/ \
+  --threshold 0.68 \
+  --enforce-detection

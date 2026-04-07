@@ -6,6 +6,8 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timezone
+
+logger = logging.getLogger(__name__)
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Body
@@ -89,7 +91,11 @@ async def get_spo2_auto():
         raise HTTPException(status_code=400, detail="Device not connected")
     if not connection.is_zepp_authenticated:
         raise HTTPException(status_code=400, detail="ECDH auth required")
-    val = await connection.config.get_spo2_auto()
+    await connection.config.start()
+    try:
+        val = await connection.config.get_spo2_auto()
+    finally:
+        await connection.config.stop()
     return {"enabled": val}
 
 
@@ -100,7 +106,11 @@ async def set_spo2_auto(enabled: bool = Query(...)):
         raise HTTPException(status_code=400, detail="Device not connected")
     if not connection.is_zepp_authenticated:
         raise HTTPException(status_code=400, detail="ECDH auth required")
-    ok = await connection.config.set_spo2_auto(enabled)
+    await connection.config.start()
+    try:
+        ok = await connection.config.set_spo2_auto(enabled)
+    finally:
+        await connection.config.stop()
     if not ok:
         raise HTTPException(status_code=500, detail="Device rejected config change")
     return {"status": "ok", "enabled": enabled}
@@ -116,11 +126,11 @@ async def connect_device(device_id: Optional[str] = Query(None)):
         await connection.connect(device_id=device_id)
         await start_realtime_hr()
         await start_sensor_stream()
-        # Delay sync so HR stream establishes first (device can't do both)
-        async def _delayed_sync():
-            await asyncio.sleep(5)
+        # Run sync shortly after connect so activity/health data appears immediately
+        async def _initial_sync():
+            await asyncio.sleep(2)
             await run_sync()
-        asyncio.create_task(_delayed_sync())
+        asyncio.create_task(_initial_sync())
         if _sync_task is None or _sync_task.done():
             _sync_task = asyncio.create_task(
                 periodic_sync_loop(interval=PERIODIC_SYNC_INTERVAL)
@@ -190,6 +200,26 @@ async def get_hr_stats(
     row = (await session.execute(q)).one()
     avg_bpm, min_bpm, max_bpm, count = row
 
+    # Get timestamps for min and max readings
+    min_ts = None
+    max_ts = None
+    if min_bpm is not None:
+        min_row = (await session.execute(
+            select(models.HeartRate.timestamp)
+            .where(models.HeartRate.timestamp >= day_ago, models.HeartRate.bpm == min_bpm)
+            .order_by(models.HeartRate.timestamp.desc()).limit(1)
+        )).scalar_one_or_none()
+        if min_row:
+            min_ts = _utc_iso(min_row)
+    if max_bpm is not None:
+        max_row = (await session.execute(
+            select(models.HeartRate.timestamp)
+            .where(models.HeartRate.timestamp >= day_ago, models.HeartRate.bpm == max_bpm)
+            .order_by(models.HeartRate.timestamp.desc()).limit(1)
+        )).scalar_one_or_none()
+        if max_row:
+            max_ts = _utc_iso(max_row)
+
     # Sleep RHR: find most recent sleep session, get HR during deep+light+rem stages
     sleep_rhr = None
     sleep_q = select(models.Sleep).order_by(desc(models.Sleep.date)).limit(1)
@@ -222,6 +252,8 @@ async def get_hr_stats(
         "avg": round(avg_bpm) if avg_bpm else None,
         "min": min_bpm,
         "max": max_bpm,
+        "min_ts": min_ts,
+        "max_ts": max_ts,
         "count": count,
         "sleep_rhr": sleep_rhr,
         "period": "24h",
@@ -558,3 +590,339 @@ async def reset_all_data():
                 continue
             logger.error("Reset data failed: %s", e)
             raise HTTPException(status_code=500, detail=f"Reset failed (DB may be busy during sync): {e}")
+
+
+# ── AI Analysis (MedGemma via Ollama) ────────────────────
+
+@router.get("/ai-models")
+async def list_ai_models(
+    ollama_url: str = "http://localhost:11434",
+    provider: str = "ollama"
+):
+    """List available models from Ollama or LM Studio."""
+    import httpx
+    url = ollama_url.rstrip("/")
+    
+    # LM Studio uses OpenAI-compatible /v1/models endpoint
+    if provider == "lmstudio":
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(f"{url}/v1/models")
+                if resp.status_code == 200:
+                    data = resp.json()
+                    models_list = [m.get("id", m.get("name", "unknown")) for m in data.get("data", [])]
+                    return {"models": models_list, "status": "ok", "provider": "lmstudio"}
+                return {"models": [], "status": "error", "detail": f"LM Studio at {url} returned {resp.status_code}"}
+        except httpx.ConnectError:
+            return {"models": [], "status": "offline", "detail": f"Cannot connect to LM Studio at {url}"}
+        except Exception as e:
+            return {"models": [], "status": "error", "detail": str(e)}
+    
+    # Default: Ollama native API
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{url}/api/tags")
+            if resp.status_code == 200:
+                data = resp.json()
+                models_list = [m["name"] for m in data.get("models", [])]
+                return {"models": models_list, "status": "ok", "provider": "ollama"}
+            logger.warning("ai-models: %s/api/tags returned %d", url, resp.status_code)
+            return {"models": [], "status": "error", "detail": f"Ollama at {url} returned {resp.status_code}"}
+    except httpx.ConnectError:
+        return {"models": [], "status": "offline", "detail": f"Cannot connect to Ollama at {url}"}
+    except Exception as e:
+        return {"models": [], "status": "error", "detail": str(e)}
+
+
+@router.post("/ai-analysis")
+async def ai_analysis(
+    body: dict = Body(...),
+    session: AsyncSession = Depends(get_session),
+):
+    """Send health data + user prompt to a local LLM via Ollama or LM Studio for analysis."""
+    import httpx
+
+    prompt = body.get("prompt", "").strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="Prompt is required")
+
+    days = body.get("days", 7)
+    model = body.get("model", "qwen3.5:35b-a3b")
+    ollama_url = body.get("ollama_url", "http://localhost:11434").rstrip("/")
+    provider = body.get("provider", "ollama")
+
+    logger.info("AI analysis: provider=%s model=%s, days=%d, url=%s, prompt=%s",
+                provider, model, days, ollama_url, prompt[:80])
+
+    # Step 1: Verify backend is reachable
+    if provider == "lmstudio":
+        health_url = f"{ollama_url}/v1/models"
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(health_url)
+                if resp.status_code != 200:
+                    raise HTTPException(status_code=503,
+                        detail=f"LM Studio at {ollama_url} returned HTTP {resp.status_code}. "
+                               f"Check the URL in Settings (default: http://localhost:1234)")
+                available = [m.get("id", m.get("name", "")) for m in resp.json().get("data", [])]
+                if model not in available and available:
+                    logger.warning("AI: model '%s' not in available list: %s", model, available)
+        except httpx.ConnectError:
+            raise HTTPException(status_code=503,
+                detail=f"Cannot connect to LM Studio at {ollama_url}. "
+                       f"Start LM Studio and ensure the server is running on port 1234.")
+    else:
+        # Ollama
+        health_url = f"{ollama_url}/api/tags"
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                tag_resp = await client.get(health_url)
+                if tag_resp.status_code != 200:
+                    logger.error("AI: Ollama health check %s returned %d: %s",
+                                 health_url, tag_resp.status_code, tag_resp.text[:200])
+                    raise HTTPException(status_code=503,
+                        detail=f"Ollama at {ollama_url} returned HTTP {tag_resp.status_code}. "
+                               f"Check the Ollama URL in Settings (default: http://localhost:11434)")
+                available = [m["name"] for m in tag_resp.json().get("models", [])]
+                if model not in available:
+                    logger.error("AI: model '%s' not found. Available: %s", model, available)
+                    raise HTTPException(status_code=400,
+                        detail=f"Model '{model}' not installed. Available: {available}. "
+                               f"Run: ollama pull {model}")
+        except httpx.ConnectError:
+            logger.error("AI: cannot connect to Ollama at %s", ollama_url)
+            raise HTTPException(status_code=503,
+                detail=f"Cannot connect to Ollama at {ollama_url}. "
+                       f"Start it with: ollama serve")
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error("AI: Ollama health check failed (%s): %s", health_url, e)
+            raise HTTPException(status_code=503,
+                detail=f"Ollama health check failed at {ollama_url}: {e}")
+
+    # Step 2: Build health data context
+    try:
+        from datetime import timedelta
+        cutoff = datetime.utcnow() - timedelta(days=days)
+        cutoff_str = cutoff.strftime("%Y-%m-%d")
+
+        from sqlalchemy import func
+        hr_stats = (await session.execute(
+            select(
+                func.count(models.HeartRate.bpm),
+                func.avg(models.HeartRate.bpm),
+                func.min(models.HeartRate.bpm),
+                func.max(models.HeartRate.bpm),
+            ).where(models.HeartRate.timestamp >= cutoff)
+        )).one()
+
+        spo2_rows = (await session.execute(
+            select(models.SpO2).where(models.SpO2.timestamp >= cutoff).order_by(models.SpO2.timestamp)
+        )).scalars().all()
+        # SpO2: aggregate to stats + last 5 readings (individual readings are too verbose for LLM context)
+        if spo2_rows:
+            spo2_vals = [r.value for r in spo2_rows]
+            spo2_data = {
+                "count": len(spo2_vals),
+                "avg": round(sum(spo2_vals) / len(spo2_vals), 1),
+                "min": min(spo2_vals),
+                "max": max(spo2_vals),
+                "recent": [{"ts": _utc_iso(r.timestamp), "val": r.value} for r in spo2_rows[-5:]],
+            }
+        else:
+            spo2_data = {"count": 0}
+
+        sleep_rows = (await session.execute(
+            select(models.Sleep).where(models.Sleep.date >= cutoff_str).order_by(models.Sleep.date)
+        )).scalars().all()
+        sleep_data = [
+            {"date": r.date, "total": r.total_minutes, "deep": r.deep_minutes,
+             "light": r.light_minutes, "rem": r.rem_minutes, "awake": r.awake_minutes}
+            for r in sleep_rows
+        ]
+
+        stress_stats = (await session.execute(
+            select(
+                func.count(models.Stress.level),
+                func.avg(models.Stress.level),
+                func.min(models.Stress.level),
+                func.max(models.Stress.level),
+            ).where(models.Stress.timestamp >= cutoff)
+        )).one()
+        stress_data = {
+            "count": stress_stats[0],
+            "avg_level": round(stress_stats[1], 1) if stress_stats[1] else None,
+            "min_level": stress_stats[2],
+            "max_level": stress_stats[3],
+        }
+
+        hrv_stats = (await session.execute(
+            select(
+                func.count(models.HRV.rmssd),
+                func.avg(models.HRV.rmssd),
+                func.min(models.HRV.rmssd),
+                func.max(models.HRV.rmssd),
+            ).where(models.HRV.timestamp >= cutoff)
+        )).one()
+        hrv_data = {
+            "count": hrv_stats[0],
+            "avg_rmssd": round(hrv_stats[1], 1) if hrv_stats[1] else None,
+            "min_rmssd": hrv_stats[2],
+            "max_rmssd": hrv_stats[3],
+        }
+
+        activity_rows = (await session.execute(
+            select(models.Activity).where(models.Activity.date >= cutoff_str).order_by(models.Activity.date)
+        )).scalars().all()
+        activity_data = [
+            {"date": r.date, "steps": r.steps, "cal": r.calories}
+            for r in activity_rows
+        ]
+
+        health_context = json.dumps({
+            "period": f"Last {days} days",
+            "heart_rate": {
+                "count": hr_stats[0],
+                "avg_bpm": round(hr_stats[1], 1) if hr_stats[1] else None,
+                "min_bpm": hr_stats[2],
+                "max_bpm": hr_stats[3],
+            },
+            "spo2": spo2_data,
+            "sleep": sleep_data[-14:],      # cap at 14 most recent nights
+            "stress": stress_data,
+            "hrv": hrv_data,
+            "activity": activity_data[-14:],  # cap at 14 most recent days
+        }, separators=(',', ':'))  # compact: no whitespace to minimise token count
+
+        logger.info("AI: health context built (%d chars / ~%d tokens, HR=%d, SpO2=%d, Sleep=%d, Stress=%d, HRV=%d, Activity=%d)",
+                     len(health_context), len(health_context) // 3,
+                     hr_stats[0], len(spo2_rows), len(sleep_data),
+                     stress_data["count"], hrv_data["count"], len(activity_data))
+    except Exception as e:
+        logger.error("AI: failed to build health context: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to query health data: {e}")
+
+    system_prompt = (
+        "You are a health data assistant analyzing wearable data from an Amazfit Helio Strap. "
+        "Provide concise insights. Always note you are not a doctor and advise consulting a healthcare professional.\n\n"
+        f"HEALTH DATA (JSON):\n{health_context}"
+    )
+
+    # Step 3: Call LLM API (300s timeout for large/slow models)
+    try:
+        if provider == "lmstudio":
+            # LM Studio uses OpenAI-compatible /v1/chat/completions
+            logger.info("AI: sending to LM Studio model=%s, prompt_len=%d, context_len=%d",
+                         model, len(prompt), len(system_prompt))
+            async with httpx.AsyncClient(timeout=300.0) as client:
+                resp = await client.post(
+                    f"{ollama_url}/v1/chat/completions",
+                    json={
+                        "model": model,
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": prompt},
+                        ],
+                        "stream": False,
+                        "max_tokens": 2048,
+                    },
+                )
+                if resp.status_code != 200:
+                    error_text = resp.text[:600]
+                    logger.error("AI: LM Studio returned %d: %s", resp.status_code, error_text)
+                    # 400 with n_keep/n_ctx means context overflow — give a clear message
+                    if resp.status_code == 400 and "n_ctx" in error_text:
+                        raise HTTPException(
+                            status_code=502,
+                            detail=(
+                                f"Model context window too small for the requested data range. "
+                                f"Try reducing the day range (e.g. 7 days instead of {days}), "
+                                f"or load the model with a larger context in LM Studio. "
+                                f"(LM Studio: {error_text[:200]})"
+                            )
+                        )
+                    raise HTTPException(
+                        status_code=502,
+                        detail=f"LM Studio returned {resp.status_code}: {error_text}"
+                    )
+                result = resp.json()
+                answer = result.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
+                if not answer.strip():
+                    logger.warning("AI: empty response from LM Studio. Raw keys: %s", list(result.keys()))
+                    answer = "The model returned an empty response. Try a more specific question."
+                logger.info("AI: response received (%d chars)", len(answer))
+        else:
+            # Ollama native API
+            logger.info("AI: sending to Ollama model=%s, prompt_len=%d, context_len=%d",
+                         model, len(prompt), len(system_prompt))
+            async with httpx.AsyncClient(timeout=300.0) as client:
+                resp = await client.post(
+                    f"{ollama_url}/api/chat",
+                    json={
+                        "model": model,
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": prompt},
+                        ],
+                        "stream": False,
+                        "think": False,
+                        "options": {
+                            "num_predict": 2048,
+                        },
+                    },
+                )
+                if resp.status_code != 200:
+                    error_text = resp.text[:500]
+                    logger.error("AI: Ollama returned %d: %s", resp.status_code, error_text)
+                    raise HTTPException(
+                        status_code=502,
+                        detail=f"Ollama returned {resp.status_code}: {error_text}"
+                    )
+                result = resp.json()
+                answer = result.get("message", {}).get("content", "") or ""
+                # Some reasoning models put output in 'thinking' field instead of 'content'
+                if not answer.strip():
+                    thinking = result.get("message", {}).get("thinking", "")
+                    if thinking:
+                        answer = thinking
+                        logger.info("AI: model returned thinking output instead of content")
+                if not answer.strip():
+                    logger.warning("AI: empty response from model. Raw keys: %s",
+                                   list(result.get("message", {}).keys()))
+                    answer = "The model returned an empty response. This can happen with reasoning models. Try a more specific question."
+                eval_duration = result.get("eval_duration", 0)
+                logger.info("AI: response received (%d chars, eval=%.1fs)",
+                             len(answer), eval_duration / 1e9 if eval_duration else 0)
+        
+        return {
+            "answer": answer,
+            "model": model,
+            "provider": provider,
+            "data_summary": {
+                "hr_readings": hr_stats[0],
+                "spo2_readings": len(spo2_data),
+                "sleep_sessions": len(sleep_data),
+                "stress_readings": stress_data.get("count", 0),
+                "hrv_readings": hrv_data.get("count", 0),
+                "activity_days": len(activity_data),
+            },
+        }
+    except httpx.ConnectError:
+        logger.error("AI: connection refused at %s", ollama_url)
+        raise HTTPException(
+            status_code=503,
+            detail=f"Cannot connect to {provider} at {ollama_url}. "
+                   f"{'Start LM Studio and ensure the server is running.' if provider == 'lmstudio' else 'Start it with: ollama serve'}"
+        )
+    except httpx.TimeoutException:
+        logger.error("AI: request timed out after 300s (model=%s)", model)
+        raise HTTPException(
+            status_code=504,
+            detail=f"{provider} request timed out (300s). The model may be loading or too slow for this prompt."
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("AI: unexpected error: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"AI analysis error: {e}")

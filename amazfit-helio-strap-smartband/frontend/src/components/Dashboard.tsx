@@ -9,6 +9,8 @@ import HRVChart from './HRVChart';
 import ActivitySummary from './ActivitySummary';
 import DeviceStatusPanel from './DeviceStatus';
 import InfoTooltip from './InfoTooltip';
+import AIAnalysis from './AIAnalysis';
+import { useWebSocket } from '../hooks/useWebSocket';
 
 const TIMEZONES = [
   'UTC',
@@ -53,6 +55,33 @@ export default function Dashboard() {
   const [spo2Auto, setSpo2Auto] = useState<boolean | null>(null);
   const [spo2Loading, setSpo2Loading] = useState(false);
   const [spo2Status, setSpo2Status] = useState<string | null>(null);
+  const [showHelp, setShowHelp] = useState(false);
+  const [ollamaUrl, setOllamaUrl] = useState(() => localStorage.getItem('ollama_url') || 'http://localhost:11434');
+  const [ollamaModel, setOllamaModel] = useState(() => localStorage.getItem('ollama_model') || '');
+  const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [aiDays, setAiDays] = useState(() => Number(localStorage.getItem('ai_days')) || 7);
+  const [aiEnabled, setAiEnabled] = useState(() => localStorage.getItem('ai_enabled') !== 'false');
+  const [aiProvider, setAiProvider] = useState<'ollama' | 'lmstudio'>(() => 
+    (localStorage.getItem('ai_provider') as 'ollama' | 'lmstudio') || 'ollama'
+  );
+
+  // Auto-detect available models on mount / when URL or provider changes
+  useEffect(() => {
+    fetch(`/api/ai-models?ollama_url=${encodeURIComponent(ollamaUrl)}&provider=${aiProvider}`)
+      .then(r => r.json())
+      .then(data => {
+        if (data.models?.length) {
+          setAvailableModels(data.models);
+          // If no model is set or current model isn't available, use the first available
+          const saved = localStorage.getItem('ollama_model');
+          if (!saved || !data.models.includes(saved)) {
+            setOllamaModel(data.models[0]);
+            localStorage.setItem('ollama_model', data.models[0]);
+          }
+        }
+      })
+      .catch(() => {});
+  }, [ollamaUrl, aiProvider]);
 
   const toggleFullscreen = useCallback(() => {
     if (!document.fullscreenElement) {
@@ -195,6 +224,13 @@ export default function Dashboard() {
             )}
           </button>
           <button
+            onClick={() => setShowHelp(true)}
+            className="w-8 h-8 flex items-center justify-center rounded-lg text-gray-500 hover:text-gray-300 hover:bg-gray-800 transition-colors"
+            title="Help"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+          </button>
+          <button
             onClick={() => setShowSettings(!showSettings)}
             className={`w-8 h-8 flex items-center justify-center rounded-lg transition-colors ${showSettings ? 'bg-gray-700 text-gray-200' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}
             title="Settings"
@@ -299,6 +335,72 @@ export default function Dashboard() {
             </div>
           </div>
           <div className="flex items-center gap-4">
+            <label className="text-xs text-gray-400">AI Analysis:</label>
+            <button
+              onClick={() => { const v = !aiEnabled; setAiEnabled(v); localStorage.setItem('ai_enabled', String(v)); }}
+              className={`relative w-10 h-5 rounded-full transition-colors ${aiEnabled ? 'bg-blue-600' : 'bg-gray-600'}`}
+            >
+              <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
+                aiEnabled ? 'translate-x-5' : ''
+              }`} />
+            </button>
+            <span className="text-[10px] text-gray-500">{aiEnabled ? 'AI panel visible' : 'AI panel hidden'}</span>
+          </div>
+          {aiEnabled && <div className="flex items-center gap-4 flex-wrap">
+            <label className="text-xs text-gray-400">Provider:</label>
+            <select
+              value={aiProvider}
+              onChange={(e) => { 
+                const v = e.target.value as 'ollama' | 'lmstudio';
+                setAiProvider(v); 
+                localStorage.setItem('ai_provider', v);
+                // Update default URL based on provider
+                const defaultUrl = v === 'lmstudio' ? 'http://localhost:1234' : 'http://localhost:11434';
+                setOllamaUrl(defaultUrl);
+                localStorage.setItem('ollama_url', defaultUrl);
+              }}
+              className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 focus:outline-none focus:border-blue-500"
+            >
+              <option value="ollama">Ollama</option>
+              <option value="lmstudio">LM Studio</option>
+            </select>
+            <input
+              value={ollamaUrl}
+              onChange={(e) => { setOllamaUrl(e.target.value); localStorage.setItem('ollama_url', e.target.value); }}
+              placeholder={aiProvider === 'lmstudio' ? "http://localhost:1234" : "http://localhost:11434"}
+              className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 w-48 font-mono focus:outline-none focus:border-blue-500"
+            />
+            {availableModels.length > 0 ? (
+              <select
+                value={ollamaModel}
+                onChange={(e) => { setOllamaModel(e.target.value); localStorage.setItem('ollama_model', e.target.value); }}
+                className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 font-mono focus:outline-none focus:border-blue-500"
+              >
+                {availableModels.map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+            ) : (
+              <input
+                value={ollamaModel}
+                onChange={(e) => { setOllamaModel(e.target.value); localStorage.setItem('ollama_model', e.target.value); }}
+                placeholder="model name"
+                className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 w-28 font-mono focus:outline-none focus:border-blue-500"
+              />
+            )}
+            <select
+              value={aiDays}
+              onChange={(e) => { const v = Number(e.target.value); setAiDays(v); localStorage.setItem('ai_days', String(v)); }}
+              className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 focus:outline-none focus:border-blue-500"
+            >
+              <option value={7}>7 days</option>
+              <option value={14}>14 days</option>
+              <option value={30}>30 days</option>
+              <option value={90}>90 days</option>
+            </select>
+            <span className="text-[10px] text-gray-500">{aiProvider === 'lmstudio' ? 'LM Studio' : 'Ollama'} URL, model, data range</span>
+          </div>}
+          <div className="flex items-center gap-4">
             <label className="text-xs text-gray-400">Data:</label>
             <button
               onClick={handleResetData}
@@ -312,34 +414,118 @@ export default function Dashboard() {
         </div>
       )}
 
-      <main className="flex-1 min-h-0 p-3 grid grid-cols-4 grid-rows-2 gap-3">
-        <div className="col-span-2"><RealtimeHR /></div>
-        <div><ActivitySummary locked={!hasAuth} connected={isConnected} /></div>
-        <div><SpO2Chart locked={!hasAuth} connected={isConnected} /></div>
+      <main className="flex-1 min-h-0 p-3 overflow-auto">
+        <div className="grid grid-cols-4 grid-rows-[minmax(0,1fr)_minmax(0,1fr)] gap-3 h-[calc(100vh-8rem)]">
+          <div className="col-span-2 min-h-0"><RealtimeHR /></div>
+          <div className="min-h-0"><ActivitySummary locked={!hasAuth} connected={isConnected} /></div>
+          <div className="min-h-0"><SpO2Chart locked={!hasAuth} connected={isConnected} /></div>
 
-        <div><SleepChart locked={!hasAuth} connected={isConnected} /></div>
-        <div><StressChart /></div>
-        <div><HRVChart locked={!hasAuth} connected={isConnected} /></div>
-        <div><HRHistory /></div>
+          <div className="min-h-0"><SleepChart locked={!hasAuth} connected={isConnected} /></div>
+          <div className="min-h-0"><StressChart /></div>
+          <div className="min-h-0"><HRVChart locked={!hasAuth} connected={isConnected} /></div>
+          <div className="min-h-0"><HRHistory /></div>
+        </div>
       </main>
+
+      <div className="flex-none border-t border-gray-800">
+        {aiEnabled && <AIAnalysis ollamaUrl={ollamaUrl} model={ollamaModel} days={aiDays} provider={aiProvider} />}
+      </div>
+
+      {/* Help Modal */}
+      {showHelp && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setShowHelp(false)}>
+          <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 max-w-lg w-full mx-4 max-h-[80vh] overflow-auto" onClick={e => e.stopPropagation()}>
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-lg font-bold text-gray-100">Help</h2>
+              <button onClick={() => setShowHelp(false)} className="text-gray-500 hover:text-gray-300 text-xl leading-none">&times;</button>
+            </div>
+            <div className="space-y-4 text-sm text-gray-300">
+              <section>
+                <h3 className="font-semibold text-gray-100 mb-1">Getting Started</h3>
+                <ol className="list-decimal list-inside space-y-1 text-gray-400">
+                  <li>Click <strong>BT Scan</strong> to find your Amazfit Helio Strap nearby</li>
+                  <li>Select the device from the scan results to connect</li>
+                  <li>An <strong>auth key</strong> is required for health data — set it in Settings</li>
+                  <li>Activity, sleep, stress, and HRV data sync automatically on connect</li>
+                </ol>
+              </section>
+              <section>
+                <h3 className="font-semibold text-gray-100 mb-1">Data Panels</h3>
+                <ul className="space-y-1 text-gray-400">
+                  <li><strong>Heart Rate</strong> — Real-time BPM chart via BLE, updates each second</li>
+                  <li><strong>Activity</strong> — Daily steps and calories from the device sensor</li>
+                  <li><strong>SpO2</strong> — Blood oxygen saturation, collected during sleep or manually on device</li>
+                  <li><strong>Sleep</strong> — Sleep stages (deep, light, REM, awake) with duration breakdown</li>
+                  <li><strong>Stress</strong> — Stress level (0-100) measured every few minutes</li>
+                  <li><strong>HRV</strong> — Heart rate variability (RMSSD) over time</li>
+                  <li><strong>Heart Rate Log</strong> — Per-second BPM readings with timestamps</li>
+                </ul>
+              </section>
+              <section>
+                <h3 className="font-semibold text-gray-100 mb-1">Sync</h3>
+                <p className="text-gray-400">
+                  Real-time data (HR, steps, calories) flows automatically once connected.
+                  Sync fetches historical data (SpO2, sleep, stress, HRV) from the device's internal storage.
+                  This also runs automatically on connect and every 5 minutes.
+                </p>
+              </section>
+              <section>
+                <h3 className="font-semibold text-gray-100 mb-1">Auth Key</h3>
+                <p className="text-gray-400">
+                  The auth key is needed to unlock health data from the device. Extract it using
+                  the <code className="text-gray-300 bg-gray-800 px-1 rounded">./extract_auth_key.sh</code> script
+                  with an Android device running the Zepp app, then paste it into Settings.
+                </p>
+              </section>
+              <section>
+                <h3 className="font-semibold text-gray-100 mb-1">Export</h3>
+                <p className="text-gray-400">
+                  Use the Export button in Settings to download all health data as JSON for analysis.
+                </p>
+              </section>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
 function HRHistory() {
-  const { data: apiData } = useHealthData<{ timestamp: string; bpm: number }>('/api/hr?limit=20', 1000);
+  const { data: wsData } = useWebSocket<{ timestamp: string; bpm: number }>('/ws/hr');
+  const { data: apiData } = useHealthData<{ timestamp: string; bpm: number }>('/api/hr?limit=20', 5000);
   const tz = localStorage.getItem('tz') || Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+  // When live WS data is flowing, show only live readings (no stale API mix).
+  // Fall back to API historical data only when WS has nothing yet.
+  const wsRecent = wsData.slice(-40).reverse();
+  let merged: { timestamp: string; bpm: number }[];
+  if (wsRecent.length > 0) {
+    // Live mode: dedup by second to prevent duplicate entries
+    const seen = new Set<string>();
+    merged = [];
+    for (const r of wsRecent) {
+      const sec = r.timestamp.slice(0, 19);
+      if (!seen.has(sec)) {
+        seen.add(sec);
+        merged.push(r);
+      }
+      if (merged.length >= 20) break;
+    }
+  } else {
+    merged = apiData.slice(0, 20);
+  }
 
   return (
     <div className="bg-gray-900 rounded-xl p-3 h-full flex flex-col">
       <h2 className="text-xs font-semibold mb-2 text-gray-400 uppercase tracking-wide">
         Heart Rate Log<InfoTooltip text="Recent heart rate readings with timestamps. Updates each second via BLE. Green=normal (<100), Yellow=elevated (100-140), Red=high (>140)." />
       </h2>
-      {apiData.length === 0 ? (
+      {merged.length === 0 ? (
         <div className="flex-1 flex items-center justify-center text-gray-600 text-xs">No data</div>
       ) : (
         <div className="flex-1 overflow-auto space-y-0.5 text-xs">
-          {apiData.slice(0, 20).map((r, i) => (
+          {merged.map((r, i) => (
             <div key={i} className="flex justify-between text-gray-400">
               <span>{new Date(r.timestamp).toLocaleTimeString([], { timeZone: tz, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })}</span>
               <span className={`font-medium ${getBpmColor(r.bpm)}`}>{r.bpm} bpm</span>

@@ -38,6 +38,7 @@ class HuamiAuth:
         self._key = auth_key
         self._authenticated = False
         self._zepp_authenticated = False
+        self._zepp: ZeppOsAuth | None = None
         self._response_queue: asyncio.Queue[bytes] = asyncio.Queue()
         self._notifying = False
 
@@ -48,6 +49,16 @@ class HuamiAuth:
     @property
     def is_zepp_authenticated(self) -> bool:
         return self._zepp_authenticated
+
+    @property
+    def session_key(self) -> bytes | None:
+        """AES session key from ECDH auth (16 bytes), or None if not authenticated."""
+        return self._zepp.session_key if self._zepp else None
+
+    @property
+    def enc_seq_nr(self) -> int:
+        """Encryption sequence number from ECDH auth."""
+        return self._zepp.enc_seq_nr if self._zepp else 0
 
     def _on_notify(self, _sender, data: bytearray):
         """Handle auth notifications on 0x0001."""
@@ -75,24 +86,48 @@ class HuamiAuth:
         Returns True if at least Phase 1 succeeds.
         Phase 2 failure is non-fatal (basic BLE features still work).
         """
+        phase1_ok = await self.phase1_auth()
+        if not phase1_ok:
+            return False
+        await self.phase2_auth()
+        return True
+
+    async def phase1_auth(self) -> bool:
+        """Run Phase 1: Standard Huami auth on 0x0001.
+
+        Returns True if standard auth succeeds. Does NOT run ECDH.
+        """
         # Phase 1: Standard Huami auth
         phase1_ok = await self._phase1_standard_auth()
         if not phase1_ok:
             return False
+        return True
 
-        # Phase 2: Zepp OS ECDH auth (unlocks health data)
+    async def phase2_auth(self) -> bool:
+        """Run Phase 2: Zepp OS ECDH auth on endpoint 0x0082.
+
+        Requires Phase 1 to have succeeded first.
+        Returns True if ECDH succeeds, False otherwise (non-fatal).
+        """
+        if not self._authenticated:
+            logger.error("Phase 2: Cannot run ECDH without Phase 1 auth")
+            return False
+
         try:
             logger.info("Starting Phase 2: Zepp OS ECDH authentication...")
-            zepp = ZeppOsAuth(self._client, self._key)
-            if await zepp.authenticate():
+            self._zepp = ZeppOsAuth(self._client, self._key)
+            if await self._zepp.authenticate():
                 self._zepp_authenticated = True
                 logger.info("Phase 2: ECDH auth successful — health data unlocked")
+                return True
             else:
                 logger.warning("Phase 2: ECDH auth failed — health data will be unavailable")
+                self._zepp = None
+                return False
         except Exception as e:
             logger.warning("Phase 2: ECDH auth error: %s", e)
-
-        return True
+            self._zepp = None
+            return False
 
     async def _phase1_standard_auth(self) -> bool:
         """Run the standard 3-step auth handshake on characteristic 0x0001."""
