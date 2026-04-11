@@ -1,6 +1,6 @@
 export interface Settings {
   fontSize: number;
-  theme: 'light' | 'dark' | 'tokyo-night';
+  theme: 'light' | 'dark' | 'tokyo-night' | 'mariana';
   wordWrap: 'off' | 'on' | 'wordWrapColumn' | 'bounded';
   wordWrapColumn: number;
   restoreWindowPosition: boolean;

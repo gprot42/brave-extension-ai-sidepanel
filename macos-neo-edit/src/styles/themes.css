@@ -39,3 +39,17 @@
   --dirty: #e0af68;
   --btn-hover: rgba(255, 255, 255, 0.1);
 }
+
+/* Mariana theme (Sublime Text Mariana palette) */
+[data-theme="mariana"] {
+  --bg: #303841;
+  --fg: #d8dee9;
+  --sidebar: #262d38;
+  --border: #1e2229;
+  --accent: #5fb4b4;
+  --tab-active: #303841;
+  --tab-inactive: #262d38;
+  --tab-hover: #2d3440;
+  --dirty: #e0b866;
+  --btn-hover: rgba(255, 255, 255, 0.08);
+}

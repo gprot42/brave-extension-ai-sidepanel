@@ -21,7 +21,9 @@
     "@tauri-apps/api": "^2.10.1",
     "@tauri-apps/plugin-dialog": "^2.6.0",
     "@tauri-apps/plugin-fs": "^2.4.5",
+    "@types/turndown": "^5.0.6",
     "marked": "^17.0.5",
-    "monaco-editor": "^0.55.1"
+    "monaco-editor": "^0.55.1",
+    "turndown": "^7.2.4"
   }
 }

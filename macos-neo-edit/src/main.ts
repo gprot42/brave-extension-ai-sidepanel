@@ -18,6 +18,7 @@ import { exportToHTML, exportToPDF } from './markdown/export';
 import { getWordCount, getReadingTime } from './markdown/stats';
 import { scheduleLint, clearLint } from './markdown/lint';
 import { registerContentAssist } from './markdown/content-assist';
+import { registerPasteWithFormatting } from './editor/paste-formatting';
 import { restoreSession, startSessionAutoSave } from './file/session-recovery';
 import { restoreWindowPosition, startWindowPositionTracking } from './file/window-state';
 
@@ -142,6 +143,7 @@ registerFormattingActions();
 registerListActions();
 registerTableActions();
 registerContentAssist();
+registerPasteWithFormatting(editor);
 renderFormattingToolbar();
 
 // Restore previous session or create an initial tab

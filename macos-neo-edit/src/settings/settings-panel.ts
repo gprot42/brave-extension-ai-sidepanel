@@ -22,8 +22,9 @@ export function openSettings(): void {
       <label>Theme</label>
       <select id="setting-theme">
         <option value="light" ${settings.theme === 'light' ? 'selected' : ''}>Light</option>
-        <option value="tokyo-night" ${settings.theme === 'tokyo-night' ? 'selected' : ''}>Tokyo Night</option>
         <option value="dark" ${settings.theme === 'dark' ? 'selected' : ''}>Dark</option>
+        <option value="tokyo-night" ${settings.theme === 'tokyo-night' ? 'selected' : ''}>Tokyo Night</option>
+        <option value="mariana" ${settings.theme === 'mariana' ? 'selected' : ''}>Mariana</option>
       </select>
     </div>
 
