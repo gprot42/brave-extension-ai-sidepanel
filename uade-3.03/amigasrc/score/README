@@ -1,4 +1,0 @@
-To compile a new sound core, please do:
-
-# sudo snap install vasm --beta --devmode
-# make
