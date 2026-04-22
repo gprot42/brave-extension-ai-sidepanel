@@ -1,6 +1,30 @@
 import * as kdbxweb from 'kdbxweb';
+import { argon2d, argon2i, argon2id } from 'hash-wasm';
 import type { KdbxEntryData } from '../shared/types';
 import { extractDomain, domainMatches } from '../shared/crypto-utils';
+
+// Set up Argon2 for KDBX4 databases using hash-wasm
+kdbxweb.CryptoEngine.setArgon2Impl(
+  async (password, salt, memory, iterations, length, parallelism, type, _version) => {
+    const passwordUint8 = new Uint8Array(password);
+    const saltUint8 = new Uint8Array(salt);
+
+    // type: 0 = Argon2d, 1 = Argon2i, 2 = Argon2id
+    const hashFn = type === 0 ? argon2d : (type as number) === 1 ? argon2i : argon2id;
+
+    const hash = await hashFn({
+      password: passwordUint8,
+      salt: saltUint8,
+      memorySize: memory,
+      iterations,
+      hashLength: length,
+      parallelism,
+      outputType: 'binary',
+    });
+
+    return hash.buffer as ArrayBuffer;
+  }
+);
 
 let currentDb: kdbxweb.Kdbx | null = null;
 
