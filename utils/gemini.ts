@@ -2,6 +2,7 @@
 // Models updated for 2026 (Gemini 3.1 series)
 
 export const GEMINI_MODELS = {
+  flash35: 'gemini-3.5-flash',
   flash: 'gemini-3.1-flash',
   flashLite: 'gemini-3.1-flash-lite',
   pro: 'gemini-3.1-pro'

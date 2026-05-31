@@ -124,6 +124,7 @@ const Sidepanel = () => {
             }}
             className="bg-zinc-800 text-xs border border-zinc-700 rounded px-2 py-1"
           >
+            <option value="flash35">3.5 Flash</option>
             <option value="flash">3.1 Flash</option>
             <option value="flashLite">3.1 Flash Lite</option>
             <option value="pro">3.1 Pro</option>
