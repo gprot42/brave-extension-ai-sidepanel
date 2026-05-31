@@ -32,19 +32,7 @@
     "host_permissions": [
       "https://docs.google.com/*",
       "https://drive.google.com/*"
-    ],
-    "side_panel": {
-      "default_path": "sidepanel.html"
-    },
-    "background": {
-      "service_worker": "background.ts"
-    },
-    "content_scripts": [
-      {
-        "matches": ["https://docs.google.com/document/*"],
-        "js": ["content.ts"],
-        "run_at": "document_idle"
-      }
     ]
-  }
+  },
+  "displayName": "AI Panel"
 }

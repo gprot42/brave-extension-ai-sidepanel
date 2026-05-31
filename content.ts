@@ -1,3 +1,11 @@
+import type { PlasmoCSConfig } from "plasmo"
+
+export const config: PlasmoCSConfig = {
+  matches: ["https://docs.google.com/document/*"],
+  run_at: "document_idle"
+}
+
+
 // Fix type issues in content script (NodeJS.Timeout vs number)
 
 let lastContext: any = null
