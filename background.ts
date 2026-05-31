@@ -1,21 +1,20 @@
-import type { PlasmoMessaging } from "@plasmohq/messaging"
+// Background service worker: open the side panel when the toolbar icon is clicked.
+//
+// NOTE: We intentionally do NOT call
+// chrome.sidePanel.setPanelBehavior({ openPanelOnActionIconClick: true })
+// because that suppresses the action.onClicked event. Some Chromium-based
+// browsers (e.g. Brave) do not reliably honor openPanelOnActionIconClick,
+// so we open the panel explicitly from the click handler instead. The
+// onClicked callback is a valid user gesture, which sidePanel.open() requires.
 
-// Allow users to open the side panel by clicking on the action toolbar icon
-chrome.sidePanel.setPanelBehavior({ openPanelOnActionIconClick: true }).catch((error) => console.error(error));
-
-const handler: PlasmoMessaging.MessageHandler = async (req: any, res: any) => {
-  const { action, tabId } = req.body || {}
-
-  if (action === "openSidePanel" && tabId) {
-    try {
-      await chrome.sidePanel.open({ tabId: tabId })
-      res.send({ success: true })
-    } catch (err: any) {
-      res.send({ success: false, error: err.message })
+chrome.action.onClicked.addListener(async (tab) => {
+  try {
+    if (tab.windowId != null) {
+      await chrome.sidePanel.open({ windowId: tab.windowId })
+    } else if (tab.id != null) {
+      await chrome.sidePanel.open({ tabId: tab.id })
     }
-  } else {
-    res.send({ success: false, error: "Invalid request" })
+  } catch (err) {
+    console.error("Failed to open side panel:", err)
   }
-}
-
-export default handler
+})
