@@ -1,5 +1,8 @@
 import type { PlasmoMessaging } from "@plasmohq/messaging"
 
+// Allow users to open the side panel by clicking on the action toolbar icon
+chrome.sidePanel.setPanelBehavior({ openPanelOnActionIconClick: true }).catch((error) => console.error(error));
+
 const handler: PlasmoMessaging.MessageHandler = async (req: any, res: any) => {
   const { action, tabId } = req.body || {}
 
